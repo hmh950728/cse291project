@@ -31,7 +31,8 @@ public final class Client {
 
     private  final Map<String,byte[]> localblock;
 
-    public Client(ConfigReader config) {
+    public Client(ConfigReader config)
+    {
         this.metadataChannel = ManagedChannelBuilder.forAddress("127.0.0.1", config.getMetadataPort(1))
                 .usePlaintext(true).build();
         this.metadataStub = MetadataStoreGrpc.newBlockingStub(metadataChannel);
@@ -66,19 +67,7 @@ public final class Client {
         {
             e.printStackTrace();
         }
-        builder.setHash(HashUtils.sha256byte(s));
-        return builder.build();
-    }
-    private  static Block StringtoBlock(String s)
-    {
-        Block.Builder builder = Block.newBuilder();
-        try {
-            builder.setData(ByteString.copyFrom(s,"UTF-8"));
-        } catch (UnsupportedEncodingException e)
-        {
-            e.printStackTrace();
-        }
-        builder.setHash(HashUtils.sha256string(s));
+        builder.setHash(HashUtils.sha256(s));
         return builder.build();
     }
     // use to read the file in local and create a lot of blocks
@@ -96,7 +85,7 @@ public final class Client {
                     myblocklist.add(block);
                 }
             }
-            localblock.put(HashUtils.sha256byte(block), block);
+            localblock.put(HashUtils.sha256(block), block);
 
         }
         catch (FileNotFoundException e)
@@ -234,6 +223,7 @@ public final class Client {
             FileInfo.Builder filebuilderfirst = FileInfo.newBuilder();
             filebuilderfirst.setFilename(filename);
             FileInfo readinfo = filebuilderfirst.build();
+
 
             // get the result of the read
             FileInfo readresult = metadataStub.readFile(readinfo);

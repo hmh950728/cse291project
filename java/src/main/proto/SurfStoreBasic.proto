@@ -69,6 +69,12 @@ service MetadataStore {
 
     // YOU CAN INSERT ADDITIONAL RPC CALLS HERE TO IMPLEMENT PART 2
     // OF THE PROJECT, BUT PLEASE DON'T MODIFY THE ABOVE CALLS/ARGUMENTS
+    rpc update(loglist) returns (SimpleAnswer) {}
+    // this function is used to add log
+    rpc Vote(Empty) returns (SimpleAnswer) {}
+    // this function is used to vote
+    rpc Commit(log) returns (Empty) {}
+    // this function is used to commit the log
 }
 
 service BlockStore {
@@ -91,6 +97,7 @@ service BlockStore {
     // Check whether a block is in storage.
     // The client only needs to specify the "hash" field.
     rpc HasBlock (Block) returns (SimpleAnswer) {}
+
 }
 
 // MESSAGES follow.  You may extend these data structures with additional fields,
@@ -127,4 +134,10 @@ message SimpleAnswer {
 
 message NodeList {
     repeated int32 nodelist = 1;
+}
+message log {
+    FileInfo fileinfo = 1;
+}
+message loglist{
+    repeated log serverlog=1;
 }
