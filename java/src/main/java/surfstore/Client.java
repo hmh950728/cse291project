@@ -33,6 +33,7 @@ public final class Client {
 
     public Client(ConfigReader config)
     {
+
         this.metadataChannel = ManagedChannelBuilder.forAddress("127.0.0.1", config.getMetadataPort(1))
                 .usePlaintext(true).build();
         this.metadataStub = MetadataStoreGrpc.newBlockingStub(metadataChannel);
@@ -98,22 +99,21 @@ public final class Client {
         }
         return myblocklist;
     }
+    // upload the file
     private void upload(String filename)
     {
         //before upload get a hashlist of the block
-        ArrayList<byte[]> myblock = createblock(filename);
-        ListIterator<byte[]> listiter = myblock.listIterator();
-        List<String> myblocklist =  new ArrayList<String>();
-
-        while (listiter.hasNext())
+        ArrayList<byte[]> fileblock = createblock(filename);
+        List<String> blocklist =  new ArrayList<String>();
+        for (int i=0; i < fileblock.size();i++)
         {
-           myblocklist.add(bytetoBlock(listiter.next()).getHash());
+           blocklist.add(bytetoBlock(fileblock.get(i)).getHash());
         }
        // first read the file in metastore
         FileInfo.Builder filebuilderfirst = FileInfo.newBuilder();
         String [] splitFileName  =  filename.split("/");
-        String myfileName =  splitFileName[splitFileName.length - 1];
-        filebuilderfirst.setFilename(myfileName);
+        String fileName =  splitFileName[splitFileName.length - 1];
+        filebuilderfirst.setFilename(fileName);
         FileInfo readinfo= filebuilderfirst.build();
 
        // get the result of the read
@@ -121,39 +121,40 @@ public final class Client {
 
         // request the modification of the file
         FileInfo.Builder requestbuilder = FileInfo.newBuilder();
-        requestbuilder.setFilename(myfileName);
+        requestbuilder.setFilename(fileName);
         requestbuilder.setVersion(readresult.getVersion());
-        requestbuilder.addAllBlocklist(myblocklist);
+        requestbuilder.addAllBlocklist(blocklist);
         FileInfo request = requestbuilder.build();
 
 
         WriteResult modifyresult = metadataStub.modifyFile(request);
-        while (modifyresult.getResult().getNumber()!= 0)
+        // if update is not successful
+        while (modifyresult.getResultValue()!= 0)
         {
             int result = modifyresult.getResult().getNumber();
             // update the version
             int version = modifyresult.getCurrentVersion()+ 1 ;
+            // if missing block
             if (result == 2)
             {
-                List<String> missing = modifyresult.getMissingBlocksList();
-                ListIterator<String> missinglistiter = missing.listIterator();
-                while (missinglistiter.hasNext())
+                List<String> missingblock = modifyresult.getMissingBlocksList();
+                for (int i=0; i < missingblock.size();i++)
                 {
-                    String missingHash = missinglistiter.next();
                     Block.Builder bbuilder = Block.newBuilder();
-                    bbuilder.setHash(missingHash);
-                    bbuilder.setData(ByteString.copyFrom(localblock.get(missingHash)));
+                    bbuilder.setHash(missingblock.get(i));
+                    bbuilder.setData(ByteString.copyFrom(localblock.get(missingblock.get(i))));
                     blockStub.storeBlock(bbuilder.build());
                 }
 
             }
             requestbuilder = FileInfo.newBuilder();
-            requestbuilder.setFilename(myfileName);
+            requestbuilder.setFilename(fileName);
             requestbuilder.setVersion(version);
-            requestbuilder.addAllBlocklist(myblocklist);
+            requestbuilder.addAllBlocklist(blocklist);
             request = requestbuilder.build();
             modifyresult = metadataStub.modifyFile(request);
         }
+        System.out.println("Ok");
     }
     private void download(String filename,String download)
     {
@@ -176,7 +177,8 @@ public final class Client {
         }
         else
          {
-            fileblocklist = readresult.getBlocklistList();
+             System.out.println("Ok");
+             fileblocklist = readresult.getBlocklistList();
             ListIterator<String> filelistiter = fileblocklist.listIterator();
             // find all the block need to be downloaded
             for (int i = 0; i < fileblocklist.size(); i++)
@@ -232,14 +234,17 @@ public final class Client {
 
             if (readresult.getVersion() == 0 || (readresult.getBlocklistCount() == 1 && readresult.getBlocklist(0).equals("0"))) {
                 System.out.println("Not Found");
-                break;
-            } else {
+                return;
+            } else
+                {
                 // update the version info;
                 filebuilderfirst.setVersion(version + 1);
                 deleteresult = metadataStub.deleteFile(filebuilderfirst.build());
 
             }
-        } while(deleteresult.getResult() == WriteResult.Result.OLD_VERSION);
+        }
+        while(deleteresult.getResult() == WriteResult.Result.OLD_VERSION);
+        System.out.println("OK");
     }
     private int getversion(String filename)
     {
@@ -257,7 +262,7 @@ public final class Client {
     {
 		metadataStub.ping(Empty.newBuilder().build());
         logger.info("Successfully pinged the Metadata server");
-        
+
         blockStub.ping(Empty.newBuilder().build());
         logger.info("Successfully pinged the Blockstore server");
 
@@ -328,6 +333,7 @@ public final class Client {
         try
         {
         	client.go(c_args.getString("operation"), c_args.getString("filePath"), c_args.getString("downloadDir"));
+
         } finally
         {
             client.shutdown();

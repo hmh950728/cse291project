@@ -17,7 +17,6 @@ import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.Namespace;
 import surfstore.SurfStoreBasic.*;
-import static io.grpc.stub.ServerCalls.asyncUnimplementedUnaryCall;
 
 public final class MetadataStore
 {
@@ -25,25 +24,29 @@ public final class MetadataStore
 
     protected Server server;
 	protected ConfigReader config;
+    protected   ManagedChannel blockChannel;
+    protected   BlockStoreGrpc.BlockStoreBlockingStub blockStub;
 
 
     public MetadataStore(ConfigReader config)
     {
 
         this.config = config;
-	}
+        this.blockChannel = ManagedChannelBuilder.forAddress("127.0.0.1",config.getBlockPort()).usePlaintext(true).build();
+        this.blockStub = BlockStoreGrpc.newBlockingStub(blockChannel);
 
+	}
 
 	private void start(int port, int numThreads) throws IOException
     {
         final MetadataStoreImpl metastore;
         // determine whether this client is leader
-        //follower
+        //follower constructor for metadata
         if ((port != config.getMetadataPort(config.getLeaderNum())))
         {
               metastore = new MetadataStoreImpl(config.blockPort,port);
         }
-        // leader
+        // leader constructor for metadata
         else
         {
             config.metadataPorts.remove(config.getLeaderNum());
@@ -56,18 +59,21 @@ public final class MetadataStore
                 .build()
                 .start();
         logger.info("Server started, listening on " + port);
-        new Thread(new Runnable() {
+        // sleep 500 miles to update the log
+        new Thread(new Runnable(){
             @Override
             public void run() {
                 while (true)
                 {
                     try {
-                        if (metastore.isLeader) {
+                        if (metastore.isLeader)
+                        {
                             metastore.updatecrashedserver();
                         }
                         Thread.sleep(500);
                     }
-                    catch (Exception e) {
+                    catch (Exception e)
+                    {
 
                     }
                 }
@@ -126,23 +132,14 @@ public final class MetadataStore
         server.blockUntilShutdown();
     }
 
-    static class MetadataStoreImpl extends MetadataStoreGrpc.MetadataStoreImplBase
+    class MetadataStoreImpl extends MetadataStoreGrpc.MetadataStoreImplBase
     {
 
-
-
-
-
-        private final ManagedChannel blockChannel;
-        private final BlockStoreGrpc.BlockStoreBlockingStub blockStub;
-
-        private final boolean isLeader;
+        private  boolean isLeader;
         private boolean iscrashed;
 
-        private final ArrayList<MetadataStoreGrpc.MetadataStoreBlockingStub> followers;
-        private final MetadataStoreGrpc.MetadataStoreBlockingStub leader;
-
-        private int commit;
+        private  ArrayList<MetadataStoreGrpc.MetadataStoreBlockingStub> followers;
+        private  MetadataStoreGrpc.MetadataStoreBlockingStub leader;
 
         List<log>  locallog = new ArrayList<log>();
         Map<String,FileInfo> fileMap;
@@ -151,8 +148,6 @@ public final class MetadataStore
         public  MetadataStoreImpl(Integer blockPort,Integer leaderport)
         {
            // start the leader metastore
-            this.blockChannel = ManagedChannelBuilder.forAddress("127.0.0.1",blockPort).usePlaintext(true).build();
-            this.blockStub = BlockStoreGrpc.newBlockingStub(blockChannel);
             this.isLeader = false ;
             this.iscrashed = false ;
             this.fileMap = new HashMap<String,FileInfo>();
@@ -162,13 +157,11 @@ public final class MetadataStore
         // constructor for the followers
         public  MetadataStoreImpl(Integer blockPort,HashMap<Integer,Integer> metaport)
         {
-            this.blockChannel = ManagedChannelBuilder.forAddress("127.0.0.1",blockPort).usePlaintext(true).build();
-            this.blockStub = BlockStoreGrpc.newBlockingStub(blockChannel);
             this.isLeader = true ;
             this.iscrashed = false ;
             this.fileMap = new HashMap<String,FileInfo>();
             this.followers = new ArrayList<MetadataStoreGrpc.MetadataStoreBlockingStub>();
-            this.leader = null ;
+            this.leader = null;
             for (Map.Entry<Integer,Integer > entry : metaport.entrySet())
             {
                 int portnum = entry.getValue();
@@ -187,44 +180,42 @@ public final class MetadataStore
         public void readFile(surfstore.SurfStoreBasic.FileInfo request,
                              io.grpc.stub.StreamObserver<surfstore.SurfStoreBasic.FileInfo> responseObserver)
         {
-            String myfile = request.getFilename();
+            String filename = request.getFilename();
             // the file does not exist
-            if (!fileMap.containsKey(myfile))
+            if (!fileMap.containsKey(filename))
             {
                 FileInfo.Builder builder = FileInfo.newBuilder();
                 builder.setVersion(0);
+                builder.setFilename(filename);
                 FileInfo response = builder.build();
                 responseObserver.onNext(response);
                 responseObserver.onCompleted();
             }
-
+            // return the information in the file map
             else
             {
-                FileInfo myinfo = fileMap.get(request.getFilename());
-                int myvesion = myinfo.getVersion();
-                List<String> mylist = myinfo.getBlocklistList();
+                FileInfo fileinfoinmap = fileMap.get(request.getFilename());
                 FileInfo.Builder builder = FileInfo.newBuilder();
-                builder.setFilename(myfile);
-                builder.setVersion(myvesion);
-                builder.addAllBlocklist(mylist);
+                builder.setFilename(filename);
+                builder.setVersion(fileinfoinmap.getVersion());
+                builder.addAllBlocklist(fileinfoinmap.getBlocklistList());
                 FileInfo response = builder.build();
                 responseObserver.onNext(response);
                 responseObserver.onCompleted();
 
             }
-
         }
         @Override
-        public void modifyFile(surfstore.SurfStoreBasic.FileInfo request,
+        synchronized public void modifyFile(surfstore.SurfStoreBasic.FileInfo request,
                                io.grpc.stub.StreamObserver<surfstore.SurfStoreBasic.WriteResult> responseObserver)
         {
-            int myvesion = 0;
+            int versioninmap;
             int result;
             int newversion;
-            List<String> mylist;
-            mylist = getmissingblock(request);
-            String myfile = request.getFilename();
-            FileInfo myinfo;
+            List<String> missingblock;
+            missingblock = getmissingblock(request);
+            String filename = request.getFilename();
+            FileInfo fileinfoinmap;
             WriteResult.Builder resultbuilder = WriteResult.newBuilder();
             if (!this.isLeader)
             {
@@ -234,123 +225,138 @@ public final class MetadataStore
                 responseObserver.onCompleted();
                 return;
             }
-            if (fileMap.containsKey(myfile) && mylist.size() == 0)
+
+            newversion = request.getVersion();
+            versioninmap  = fileMap.containsKey(filename)?fileMap.get(filename).getVersion():0;
+            // if the version is not current version +1, return "old version"
+            if (newversion !=versioninmap  + 1)
             {
+                result = 1;
+                resultbuilder.setCurrentVersion(versioninmap);
+                resultbuilder.setResultValue(result);
+                WriteResult response = resultbuilder.build();
+                responseObserver.onNext(response);
+                responseObserver.onCompleted();
+                return;
 
-                myinfo = fileMap.get(request.getFilename());
-                newversion = request.getVersion();
-                myvesion = myinfo.getVersion();
-
-                // if the version is not current version +1, return "old version"
-                if (newversion != myvesion + 1)
-                {
-                    result = 1;
-                    resultbuilder.setCurrentVersion(myvesion);
-                    resultbuilder.setResultValue(result);
-
-                }
-                else
-                {
-                    result = 0;
-                    resultbuilder.setCurrentVersion(newversion);
-                    resultbuilder.setResultValue(result);
-
-                    FileInfo.Builder filebuilder = FileInfo.newBuilder();
-                    filebuilder.setFilename(myfile);
-                    filebuilder.setVersion(newversion);
-                    filebuilder.addAllBlocklist(request.getBlocklistList());
-                    FileInfo mynewinfo = filebuilder.build();
-//                    fileMap.put(myfile, mynewinfo);
-                    two_phase_commit(mynewinfo);
-
-                }
+            }
+            if (missingblock.size() == 0)
+            {
+                // when there is the no missing block and version is valid
+                FileInfo.Builder filebuilder = FileInfo.newBuilder();
+                filebuilder.setFilename(filename);
+                filebuilder.setVersion(newversion);
+                filebuilder.addAllBlocklist(request.getBlocklistList());
+                FileInfo infotocommit = filebuilder.build();
+                // 2pc commit the update
+                two_phase_commit(infotocommit);
+                // send back the result
+                result = 0;
+                resultbuilder.setCurrentVersion(newversion);
+                resultbuilder.setResultValue(result);
+                WriteResult response = resultbuilder.build();
+                responseObserver.onNext(response);
+                responseObserver.onCompleted();
+                return;
             }
             else
             {
                 result = 2;
-                resultbuilder.setCurrentVersion(0);
-                resultbuilder.addAllMissingBlocks(request.getBlocklistList());
+                resultbuilder.setCurrentVersion(versioninmap);
+                resultbuilder.addAllMissingBlocks(missingblock);
                 resultbuilder.setResultValue(result);
-//
-                myvesion = fileMap.containsKey(myfile)?fileMap.get(myfile).getVersion():0;
-                FileInfo.Builder filebuilder = FileInfo.newBuilder();
-                filebuilder.setFilename(myfile);
-                filebuilder.setVersion(myvesion);
-                FileInfo mynewinfo = filebuilder.build();
-                two_phase_commit(mynewinfo);
+                WriteResult response = resultbuilder.build();
+                responseObserver.onNext(response);
+                responseObserver.onCompleted();
+                return;
             }
-            WriteResult response = resultbuilder.build();
-            responseObserver.onNext(response);
-            responseObserver.onCompleted();
         }
 
         @Override
-        public void deleteFile(surfstore.SurfStoreBasic.FileInfo request,
+        synchronized public void deleteFile(surfstore.SurfStoreBasic.FileInfo request,
                                io.grpc.stub.StreamObserver<surfstore.SurfStoreBasic.WriteResult> responseObserver)
         {
 
-            int myvesion;
+            int versioninmap ;
             int result;
             int newversion;
-            List<String> mylist;
-            String myfile = request.getFilename();
-            FileInfo myinfo;
+            List<String> blocklistinmap;
+            String filename = request.getFilename();
+            FileInfo fileinfoinmap;
             WriteResult.Builder resultbuilder = WriteResult.newBuilder();
+            // if this server is not leader, return "Not Leader"
             if (!this.isLeader)
             {
                 resultbuilder.setResultValue(3);
                 WriteResult response = resultbuilder.build();
                 responseObserver.onNext(response);
                 responseObserver.onCompleted();
+                return;
             }
-            if (fileMap.containsKey(myfile))
+            if (fileMap.containsKey(filename))
             {
-                myinfo = fileMap.get(request.getFilename());
+                fileinfoinmap = fileMap.get(request.getFilename());
                 newversion = request.getVersion();
-                myvesion = myinfo.getVersion();
-                mylist = myinfo.getBlocklistList();
-                if (newversion != myvesion + 1)
+                versioninmap  = fileinfoinmap .getVersion();
+                blocklistinmap =fileinfoinmap .getBlocklistList();
+                //  when the version is not old version+1, return old version
+                if (newversion != versioninmap + 1)
                 {
                     result = 1;
-                    resultbuilder.setCurrentVersion(myvesion);
+                    resultbuilder.setCurrentVersion(versioninmap);
                     resultbuilder.setResultValue(result);
+                    WriteResult response = resultbuilder.build();
+                    responseObserver.onNext(response);
+                    responseObserver.onCompleted();
+                    return;
                 }
                 else
                 {
-                    if (mylist.get(0).equals("0") && mylist.size() == 1)
+                    // when the file has been deleted, return old version
+                    if (request.getBlocklistCount()==1&&request.getBlocklist(0).equals("0"))
                     {
-                        resultbuilder.setCurrentVersion(newversion);
+                        resultbuilder.setCurrentVersion(versioninmap);
                         resultbuilder.setResultValue(0);
+                        WriteResult response = resultbuilder.build();
+                        responseObserver.onNext(response);
+                        responseObserver.onCompleted();
+                        return;
                     }
                     else
                     {
-//                        // delete the old fileinfo
-//                        fileMap.remove(myinfo);
+
                         FileInfo.Builder filebuilder = FileInfo.newBuilder();
-                        filebuilder.setFilename(myfile);
+                        filebuilder.setFilename(filename);
                         // change the version to a new version
                         filebuilder.setVersion(newversion);
-                        List<String> mynewlist = new ArrayList<String>();
-                        mynewlist.add("0");
-                        filebuilder.addAllBlocklist(mynewlist);
-                        FileInfo mynewinfo = filebuilder.build();
-                        // update the filemap
-                        two_phase_commit(mynewinfo);
+                        List<String> allreadydelete = new ArrayList<String>();
+                        // put "0" to show that the file has already been deleted
+                        allreadydelete.add("0");
+                        filebuilder.addAllBlocklist(allreadydelete);
+                        FileInfo infotocommit = filebuilder.build();
+                        // 2pc commit the update
+                        two_phase_commit(infotocommit);
+                        // send back the result
                         resultbuilder.setCurrentVersion(newversion);
                         resultbuilder.setResultValue(0);
+                        WriteResult response = resultbuilder.build();
+                        responseObserver.onNext(response);
+                        responseObserver.onCompleted();
+                        return;
                     }
                 }
 
             }
+            // if the file name is not in filemap, set the version 0
             else
             {
                 resultbuilder.setCurrentVersion(0);
+                WriteResult response = resultbuilder.build();
+                responseObserver.onNext(response);
+                responseObserver.onCompleted();
+                return;
             }
-            WriteResult response = resultbuilder.build();
-            responseObserver.onNext(response);
-            responseObserver.onCompleted();
         }
-
 
         @Override
         public void isLeader(surfstore.SurfStoreBasic.Empty request,
@@ -394,9 +400,10 @@ public final class MetadataStore
             responseObserver.onNext(response);
             responseObserver.onCompleted();
         }
+        @Override
         public void vote(surfstore.SurfStoreBasic.Empty request, io.grpc.stub.StreamObserver<surfstore.SurfStoreBasic.SimpleAnswer> responseObserver)
         {
-            SimpleAnswer response =  SimpleAnswer.newBuilder().setAnswer(this.iscrashed).build();
+            SimpleAnswer response =  SimpleAnswer.newBuilder().setAnswer(!this.iscrashed).build();
             responseObserver.onNext(response);
             responseObserver.onCompleted();
         }
@@ -404,12 +411,11 @@ public final class MetadataStore
         public List<String> getmissingblock(surfstore.SurfStoreBasic.FileInfo request)
         {
             List<String>  missingblock = new  ArrayList<String>();
-            List<String> mylist = request.getBlocklistList();
-            ListIterator<String> listiter= mylist.listIterator();
-            while (listiter.hasNext())
+            List<String> blocklistinmap = request.getBlocklistList();
+            for (int i=0; i< blocklistinmap.size();i++)
             {
                 Block.Builder builder = Block.newBuilder();
-                builder.setHash(listiter.next());
+                builder.setHash(blocklistinmap.get(i));
                 Block response = builder.build();
                 if (blockStub.hasBlock(response).getAnswer() == false)
                 {
@@ -418,17 +424,11 @@ public final class MetadataStore
             }
             return missingblock;
         }
-        public void update(surfstore.SurfStoreBasic.loglist request,
+        @Override
+        synchronized public void update(surfstore.SurfStoreBasic.loglist request,
                            io.grpc.stub.StreamObserver<surfstore.SurfStoreBasic.SimpleAnswer> responseObserver)
         {
 
-//
-//            List<log> leaderlog =  new ArrayList<log>();
-//            List<log> serverlog =  request.getServerlogList();
-//            for (int i=0; i < serverlog.size();i++)
-//            {
-//                leaderlog.add(serverlog.get(i));
-//            }
             // need to add the missing log
             List<log> leaderlog = request.getServerlogList();
             if (leaderlog.size()!=locallog.size())
@@ -446,7 +446,8 @@ public final class MetadataStore
             responseObserver.onCompleted();
 
         }
-        public void commit(surfstore.SurfStoreBasic.log request,
+        @Override
+        synchronized public void commit(surfstore.SurfStoreBasic.log request,
                            io.grpc.stub.StreamObserver<surfstore.SurfStoreBasic.Empty> responseObserver)
         {
             if (!iscrashed)
@@ -460,14 +461,15 @@ public final class MetadataStore
             responseObserver.onCompleted();
 
         }
-        public void two_phase_commit(surfstore.SurfStoreBasic.FileInfo request)
+        synchronized public void two_phase_commit(surfstore.SurfStoreBasic.FileInfo request)
         {
+
             log.Builder logbuilder = log.newBuilder().setFileinfo(request);
             log mylog = logbuilder.build();
             locallog.add(mylog);
             int vote = 1;
             //1pc, every followers vote for the commit
-            for (int i=0; i<followers.size();i++)
+            for (int i=0; i< followers.size();i++)
             {
                 if (followers.get(i).vote(Empty.newBuilder().build()).getAnswer())
                 {
@@ -478,8 +480,8 @@ public final class MetadataStore
             //2pc if majority vote commit the log
             if (vote > 1.0 * followers.size()/2 )
             {
-                fileMap.put(request.getFilename(), request);
-                for (int i=0; i<followers.size();i++)
+                this.fileMap.put(request.getFilename(), request);
+                for (int i=0; i < followers.size();i++)
                 {
                     if (followers.get(i).isCrashed(Empty.newBuilder().build()).getAnswer()==false)
                     {
@@ -493,30 +495,27 @@ public final class MetadataStore
             else
             {
                 locallog.remove(request);
-
             }
 
         }
         public void updatecrashedserver()
         {
-            SimpleAnswer response;
+            // wait 500ms to update the log for uncrashed server
             loglist.Builder logbuilder = loglist.newBuilder();
-            for (int i=0;i<locallog.size();i++)
+            for (int i=0;i < locallog.size();i++)
             {
                 logbuilder.addServerlog(i,locallog.get(i));
 
             }
             loglist alllog= logbuilder.build();
-            for (int i=0; i< followers.size();i++)
+            for (int i=0; i < followers.size();i++)
             {
-                if(followers.get(i).isCrashed(Empty.newBuilder().build()).getAnswer()== false)
+                if(followers.get(i).isCrashed(Empty.newBuilder().build()).getAnswer() == false)
                 {
-                    response = followers.get(i).update(alllog);
-
+                    followers.get(i).update(alllog);
                 }
             }
         }
-
         // TODO: Implement the other RPCs!
     }
 }
