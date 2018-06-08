@@ -357,7 +357,18 @@ public final class MetadataStore
                 return;
             }
         }
-
+        @Override
+        synchronized public void getVersion(surfstore.SurfStoreBasic.FileInfo request,io.grpc.stub.StreamObserver<surfstore.SurfStoreBasic.FileInfo> responseObserver)
+        {
+            FileInfo fileinfoinmap = fileMap.get(request.getFilename());
+            int versioninmap  = fileinfoinmap .getVersion();
+            FileInfo.Builder builder = FileInfo.newBuilder();
+            builder.setFilename(request.getFilename());
+            builder.setVersion(versioninmap);
+            FileInfo response = builder.build();
+            responseObserver.onNext(response);
+            responseObserver.onCompleted();
+        }
         @Override
         public void isLeader(surfstore.SurfStoreBasic.Empty request,
                              io.grpc.stub.StreamObserver<surfstore.SurfStoreBasic.SimpleAnswer> responseObserver)
